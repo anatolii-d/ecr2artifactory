@@ -79,6 +79,9 @@ Enter new tag prefix (e.g., new-repo-tag-prefix):
 
 The script will then process each repository and image, displaying progress and any encountered issues.
 
+Run the script: `./ecr2artifactory.py --force-update`
+This script will force an update of the Docker images. If necessary, it will replace and update the Docker images on Artifactory.
+
 ## Functions
 
 - `get_ecr_repositories(ecr_client)`: Fetches all ECR repositories.
