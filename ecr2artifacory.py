@@ -7,7 +7,20 @@ import boto3
 import sys
 import os
 import argparse
+import logging
+import datetime
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler(f"migration-{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')}.log", mode='w'),
+        logging.StreamHandler()
+    ]
+)
 
 # Load environment variables from .env file if present
 load_dotenv()
@@ -55,7 +68,13 @@ def pull_docker_image(image):
     """
     Pull Docker image.
     """
-    subprocess.run(f"docker pull {image}", shell=True, check=True)
+    subprocess.run(
+        f"docker pull {image}",
+        shell=True,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT
+    )
 
 def tag_docker_image(source_image, target_image):
     """
@@ -67,7 +86,13 @@ def push_docker_image(image):
     """
     Push Docker image to Artifactory.
     """
-    subprocess.run(f"docker push {image}", shell=True, check=True)
+    subprocess.run(
+        f"docker push {image}",
+        shell=True,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT
+    )
 
 def remove_docker_image(image):
     """
@@ -83,10 +108,10 @@ def remove_docker_image(image):
     )
     container_ids = result.stdout.strip()
     if container_ids:
-        print(f"Image '{image}' is in use by containers: {container_ids}. Skipping removal.")
+        logging.info(f"Image '{image}' is in use by containers: {container_ids}. Skipping removal.")
     else:
         subprocess.run(f"docker rmi {image}", shell=True, check=True)
-        print(f"Removed image: {image}")
+        logging.info(f"Removed image: {image}")
 
 def image_exists_in_artifactory(image):
     """
@@ -119,26 +144,26 @@ def main():
     try:
         repositories = get_ecr_repositories(ecr_client)
     except Exception as e:
-        print(f"Error fetching ECR repositories: {e}")
+        logging.error(f"Error fetching ECR repositories: {e}")
         sys.exit(1)
+
+    # Log in to AWS ECR once
+    ecr_registry = f"{AWS_ID}.dkr.ecr.{AWS_REGION}.amazonaws.com"
+    docker_login(ecr_registry)
+
+    # Log in to Artifactory once
+    docker_login(ARTIFACTORY_REGISTRY_URL, ARTIFACTORY_USERNAME, ARTIFACTORY_PASSWORD)
 
     # Step 2: Process each repository
     for repo_name in repositories:
-        print(f"Processing repository: {repo_name}")
+        logging.info(f"Processing repository: {repo_name}")
 
         try:
             # Fetch image tags
             tags = get_image_tags(ecr_client, repo_name)
         except Exception as e:
-            print(f"Error fetching image tags for {repo_name}: {e}")
+            logging.error(f"Error fetching image tags for {repo_name}: {e}")
             continue
-
-        # Log in to AWS ECR
-        ecr_registry = f"{AWS_ID}.dkr.ecr.{AWS_REGION}.amazonaws.com"
-        docker_login(ecr_registry)
-
-        # Log in to Artifactory
-        docker_login(ARTIFACTORY_REGISTRY_URL, ARTIFACTORY_USERNAME, ARTIFACTORY_PASSWORD)
 
         # Step 3: Pull, Retag, Push, and Remove each image
         for tag in tags:
@@ -147,69 +172,28 @@ def main():
 
             # Check if image exists in Artifactory
             if not force_update and image_exists_in_artifactory(artifactory_image):
-                print(f"Image '{artifactory_image}' already exists in Artifactory. Skipping.")
+                logging.info(f"Image '{artifactory_image}' already exists in Artifactory. Skipping.")
                 continue
 
             try:
-                print(f"Pulling image: {ecr_image}")
+                logging.info(f"Pulling image: {ecr_image}")
                 pull_docker_image(ecr_image)
 
-                print(f"Re-tagging image: {ecr_image} -> {artifactory_image}")
+                logging.info(f"Re-tagging image: {ecr_image} -> {artifactory_image}")
                 tag_docker_image(ecr_image, artifactory_image)
 
-                print(f"Pushing image: {artifactory_image}")
+                logging.info(f"Pushing image: {artifactory_image}")
                 push_docker_image(artifactory_image)
 
                 # Remove images to free space
-                print(f"Removing local image: {ecr_image}")
+                logging.info(f"Removing local image: {ecr_image}")
                 remove_docker_image(ecr_image)
-def main():
-    # Perform Docker login for AWS ECR
-    aws_login_cmd = f"aws ecr get-login-password --region {region} | docker login --username AWS --password-stdin {ecr_registry}"
-    subprocess.run(aws_login_cmd, shell=True, check=True)
 
-    # Perform Docker login for Artifactory
-    artifactory_login_cmd = f"echo {ARTIFACTORY_PASSWORD} | docker login --username {ARTIFACTORY_USERNAME} --password-stdin {ARTIFACTORY_REGISTRY_URL}"
-    subprocess.run(artifactory_login_cmd, shell=True, check=True)
-
-    # Step 3: Pull, Retag, Push, and Remove each image
-    for tag in tags:
-        ecr_image = f"{ecr_registry}/{repo_name}:{tag}"
-        artifactory_image = f"{ARTIFACTORY_REGISTRY_URL}/{NEW_REPOSITORY_TAG_PREFIX}/{repo_name}:{tag}"
-
-        # Check if image exists in Artifactory
-        if not force_update and image_exists_in_artifactory(artifactory_image):
-            print(f"Image '{artifactory_image}' already exists in Artifactory. Skipping.")
-            continue
-
-        try:
-            print(f"Pulling image: {ecr_image}")
-            pull_docker_image(ecr_image)
-
-            print(f"Re-tagging image: {ecr_image} -> {artifactory_image}")
-            tag_docker_image(ecr_image, artifactory_image)
-
-            print(f"Pushing image: {artifactory_image}")
-            push_docker_image(artifactory_image)
-
-            # Remove images to free space
-            print(f"Removing local image: {ecr_image}")
-            remove_docker_image(ecr_image)
-
-            print(f"Removing local image: {artifactory_image}")
-            remove_docker_image(artifactory_image)
-
-        except subprocess.CalledProcessError as e:
-            print(f"Error processing {ecr_image}: {e}")
-            continue
-
-if __name__ == "__main__":
-    main()
-                print(f"Removing local image: {artifactory_image}")
+                logging.info(f"Removing local image: {artifactory_image}")
                 remove_docker_image(artifactory_image)
 
             except subprocess.CalledProcessError as e:
-                print(f"Error processing {ecr_image}: {e}")
+                logging.error(f"Error processing {ecr_image}: {e}")
                 continue
 
 if __name__ == "__main__":
